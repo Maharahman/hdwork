@@ -7,7 +7,6 @@ const {
   formatCollectorRecoveredMessage,
 } = require("./cacti-alarm.service");
 
-const HEALTH_STALE_AFTER_SECONDS = Number(process.env.CACTI_COLLECTOR_STALE_AFTER_SECONDS || 15 * 60);
 const TELEGRAM_MESSAGE_LIMIT = 3900;
 let schedulerStarted = false;
 let schedulerRunning = false;
@@ -38,38 +37,28 @@ function splitAlarmDevices(customerType, devices) {
   return batches;
 }
 
-async function recordCollectorHealth({ collector, customerType, health = {}, scans = [] }) {
-  const ping = health.cacti_ping || {};
-  const failedScans = scans.filter((scan) => scan.status !== "success");
+async function recordCollectorHealth({ collector, scans = [] }) {
+  const failedScans = scans.filter((scan) => scan.status !== "success" && scan.failure_kind !== "login");
   const scanSummary = scans.map((scan) => ({
     server: scan.server,
     status: scan.status,
     error: scan.error || null,
+    failure_kind: scan.failure_kind || null,
   }));
 
   await pool.query(
     `
     INSERT INTO cacti_collector_health (
       collector, customer_type, last_received_at,
-      last_ping_host, last_ping_reachable, last_ping_latency_ms, last_ping_error,
       last_scan_failed_count, last_scan_summary
-    ) VALUES (?, ?, NOW(), ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, 'GLOBAL', NOW(), ?, ?)
     ON DUPLICATE KEY UPDATE
       last_received_at = NOW(),
-      last_ping_host = VALUES(last_ping_host),
-      last_ping_reachable = VALUES(last_ping_reachable),
-      last_ping_latency_ms = VALUES(last_ping_latency_ms),
-      last_ping_error = VALUES(last_ping_error),
       last_scan_failed_count = VALUES(last_scan_failed_count),
       last_scan_summary = VALUES(last_scan_summary)
     `,
     [
       collector || "UNKNOWN_COLLECTOR",
-      customerType,
-      ping.host || null,
-      typeof ping.reachable === "boolean" ? ping.reachable : null,
-      Number.isFinite(ping.latency_ms) ? ping.latency_ms : null,
-      ping.error || null,
       failedScans.length,
       JSON.stringify(scanSummary),
     ],
@@ -122,50 +111,46 @@ async function sendActiveAlarms() {
 }
 
 function healthProblems(row) {
-  const problems = [];
-  if (Number(row.seconds_since_received) > HEALTH_STALE_AFTER_SECONDS) {
-    problems.push(`Tidak ada kiriman ke backend selama ${Math.floor(Number(row.seconds_since_received) / 60)} menit.`);
-    return problems;
+  const scans = safeJson(row.last_scan_summary, []);
+  if (!scans.length || scans.some((scan) => scan.status === "success")) return [];
+
+  const connectionFailures = scans.filter((scan) => scan.failure_kind === "connection");
+  if (connectionFailures.length !== scans.length) return [];
+
+  return [
+    `Semua jalur Cacti tidak dapat diakses: ${connectionFailures.map((scan) => scan.server).join(", ")}.`,
+  ];
+}
+
+async function sendHealthToAlarmGroups(text) {
+  for (const customerType of ["nodeb", "datin"]) {
+    const destination = await telegramRepository.getAlarmDestination(customerType);
+    if (!destination) continue;
+    const delivery = await telegramService.sendMessage(destination.telegram_chat_id, text, destination.telegram_thread_id);
+    if (!delivery.delivered) console.error(`Health collector ${customerType} gagal dikirim: ${delivery.error}`);
   }
-  if (Number(row.last_ping_reachable) === 0) {
-    problems.push(`Jalur ke Cacti ${row.last_ping_host || "-"} tidak dapat dijangkau${row.last_ping_error ? ` (${row.last_ping_error})` : "."}`);
-  }
-  if (Number(row.last_scan_failed_count) > 0) {
-    const failed = safeJson(row.last_scan_summary, []).filter((scan) => scan.status !== "success");
-    const detail = failed.map((scan) => `${scan.server}: ${scan.error || "scan gagal"}`).join("; ");
-    problems.push(`Scan Cacti gagal pada ${detail || `${row.last_scan_failed_count} server`}.`);
-  }
-  return problems;
 }
 
 async function sendCollectorHealth() {
   const [rows] = await pool.query(
     `
-    SELECT *, TIMESTAMPDIFF(SECOND, last_received_at, NOW()) AS seconds_since_received
+    SELECT *
     FROM cacti_collector_health
+    WHERE customer_type = 'GLOBAL'
     `,
   );
 
+  let vpnDisconnected = false;
   for (const row of rows) {
     const problems = healthProblems(row);
     const unhealthy = problems.length > 0;
-    const destination = await telegramRepository.getAlarmDestination(row.customer_type);
+    if (unhealthy) vpnDisconnected = true;
 
-    if (destination && unhealthy) {
-      const delivery = await telegramService.sendMessage(
-        destination.telegram_chat_id,
-        formatCollectorHealthMessage(row.customer_type, { collector: row.collector, problems }),
-        destination.telegram_thread_id,
-      );
-      if (!delivery.delivered) console.error(`Health collector ${row.customer_type} gagal dikirim: ${delivery.error}`);
+    if (unhealthy) {
+      await sendHealthToAlarmGroups(formatCollectorHealthMessage({ collector: row.collector, problems }));
     }
-    if (destination && !unhealthy && row.last_alert_state === "UNHEALTHY") {
-      const delivery = await telegramService.sendMessage(
-        destination.telegram_chat_id,
-        formatCollectorRecoveredMessage(row.customer_type, row.collector),
-        destination.telegram_thread_id,
-      );
-      if (!delivery.delivered) console.error(`Pemulihan collector ${row.customer_type} gagal dikirim: ${delivery.error}`);
+    if (!unhealthy && row.last_alert_state === "UNHEALTHY") {
+      await sendHealthToAlarmGroups(formatCollectorRecoveredMessage(row.collector));
     }
 
     await pool.query(
@@ -173,14 +158,15 @@ async function sendCollectorHealth() {
       [unhealthy ? "UNHEALTHY" : "HEALTHY", row.id],
     );
   }
+  return vpnDisconnected;
 }
 
 async function runScheduledNotifications() {
   if (schedulerRunning) return;
   schedulerRunning = true;
   try {
-    await sendActiveAlarms();
-    await sendCollectorHealth();
+    const vpnDisconnected = await sendCollectorHealth();
+    if (!vpnDisconnected) await sendActiveAlarms();
   } catch (error) {
     console.error("Penjadwalan alarm Cacti gagal:", error.message);
   } finally {
@@ -216,5 +202,6 @@ module.exports = {
   runScheduledNotifications,
   startCactiScheduler,
   splitAlarmDevices,
+  healthProblems,
   millisecondsUntilNextTenMinuteMark,
 };

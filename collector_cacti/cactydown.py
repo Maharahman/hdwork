@@ -1,6 +1,5 @@
 import os
 import re
-import subprocess
 import time
 import requests
 
@@ -34,12 +33,6 @@ HDWORK_API_KEY = os.getenv("HDWORK_API_KEY")
 COLLECTOR_INTERVAL_SECONDS = int(
     os.getenv("COLLECTOR_INTERVAL_SECONDS", "300")
 )
-
-CACTI_HEALTH_PING_HOST = os.getenv(
-    "CACTI_HEALTH_PING_HOST"
-)
-
-
 
 CACTI_CONFIG = {
     "nodeb": {
@@ -90,68 +83,6 @@ def validate_config():
             "COLLECTOR_INTERVAL_SECONDS harus lebih dari 0"
         )
 
-    if not CACTI_HEALTH_PING_HOST:
-        raise Exception(
-            "CACTI_HEALTH_PING_HOST belum dikonfigurasi"
-        )
-
-
-# =========================================================
-# HEALTH: JALUR COLLECTOR KE CACTI
-# =========================================================
-
-def ping_cacti():
-    started_at = time.monotonic()
-
-    try:
-        result = subprocess.run(
-            ["ping", "-c", "1", CACTI_HEALTH_PING_HOST],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-        latency_ms = round(
-            (time.monotonic() - started_at) * 1000
-        )
-
-        if result.returncode == 0:
-            print(
-                f"✅ Ping Cacti berhasil: "
-                f"{CACTI_HEALTH_PING_HOST} ({latency_ms} ms)"
-            )
-            return {
-                "host": CACTI_HEALTH_PING_HOST,
-                "reachable": True,
-                "latency_ms": latency_ms,
-                "error": None,
-            }
-
-        error = (result.stderr or result.stdout).strip()
-        print(
-            f"❌ Ping Cacti gagal: "
-            f"{CACTI_HEALTH_PING_HOST}"
-        )
-        return {
-            "host": CACTI_HEALTH_PING_HOST,
-            "reachable": False,
-            "latency_ms": latency_ms,
-            "error": error[:255] or "host tidak merespons ping",
-        }
-
-    except (subprocess.TimeoutExpired, OSError) as error:
-        print(
-            f"❌ Ping Cacti gagal: "
-            f"{CACTI_HEALTH_PING_HOST}: {error}"
-        )
-        return {
-            "host": CACTI_HEALTH_PING_HOST,
-            "reachable": False,
-            "latency_ms": None,
-            "error": str(error)[:255],
-        }
-
-
 # =========================================================
 # LOGIN CACTI
 # =========================================================
@@ -182,6 +113,7 @@ def login_to_cacti(base_url, username, password):
     login_url = (
         f"{base_url.rstrip('/')}/index.php"
     )
+    print(login_url)
 
     res = session.get(
         login_url,
@@ -242,6 +174,40 @@ def login_to_cacti(base_url, username, password):
 
 
 # =========================================================
+# LOGOUT CACTI
+# =========================================================
+
+def logout_from_cacti(session, base_url):
+
+    logout_url = (
+        f"{base_url.rstrip('/')}/logout.php"
+    )
+
+    try:
+
+        res = session.get(
+            logout_url,
+            timeout=10,
+            allow_redirects=True
+        )
+
+        res.raise_for_status()
+
+        print(
+            f"🚪 Logout berhasil: {base_url}"
+        )
+
+    except requests.RequestException as error:
+
+        print(
+            f"⚠️ Logout gagal: {base_url}: {error}"
+        )
+
+    finally:
+        session.close()
+
+
+# =========================================================
 # PARSER DEVICE DOWN
 # =========================================================
 
@@ -262,12 +228,14 @@ def parse_down_devices(html):
     for group in down_tables:
 
         group_name_tag = group.find("b")
+        print(group_name_tag)
 
         group_name = (
-            group_name_tag.get_text(strip=True)
+            group_name_tag.get_text()
             if group_name_tag
             else "Unknown Group"
         )
+       # print(group_name)
 
         # Abaikan group Other
         if group_name.strip().lower() == "other":
@@ -350,6 +318,7 @@ def collect_cacti(customer_type):
     ]
 
     for region, config in servers.items():
+        session = None
 
         print()
         print("=" * 60)
@@ -374,6 +343,7 @@ def collect_cacti(customer_type):
                 f"{config['base_url'].rstrip('/')}"
                 "/plugins/monitor/monitor.php"
             )
+            print(f"link monitoringe = {monitor_url}")
 
             res = session.get(
                 monitor_url,
@@ -428,6 +398,14 @@ def collect_cacti(customer_type):
                 "error": str(e)
             })
 
+        finally:
+
+            if session:
+                logout_from_cacti(
+                    session,
+                    config["base_url"]
+                )
+
     return all_devices, scans
 
 
@@ -435,28 +413,10 @@ def collect_cacti(customer_type):
 # KIRIM KE HD WORK
 # =========================================================
 
-def send_to_hdwork(
-    customer_type,
-    devices,
-    scans,
-    health,
-):
-
-    payload = {
-        "source": "cacti",
-        "customer_type": customer_type,
-        "collector": NAMA_PC,
-        "scans": scans,
-        "devices": devices,
-        "health": health,
-    }
+def post_to_hdwork(payload, label):
 
     print()
-    print(
-        f"📤 Kirim data "
-        f"{customer_type.upper()} "
-        f"ke HD Work..."
-    )
+    print(f"📤 Kirim {label} ke HD Work...")
 
     try:
 
@@ -464,44 +424,67 @@ def send_to_hdwork(
             HDWORK_URL,
             json=payload,
             headers={
-                "X-Collector-Key":
-                    HDWORK_API_KEY
+                "X-Collector-Key": HDWORK_API_KEY
             },
             timeout=15
         )
 
-        print(
-            f"📡 HD Work "
-            f"{customer_type.upper()} "
-            f"status: "
-            f"{res.status_code}"
-        )
-
-        print(
-            "📥 HD Work response:",
-            res.text
-        )
-
+        print(f"📡 HD Work {label} status: {res.status_code}")
+        print("📥 HD Work response:", res.text)
         res.raise_for_status()
-
-        print(
-            f"✅ Data "
-            f"{customer_type.upper()} "
-            f"berhasil dikirim"
-        )
-
+        print(f"✅ {label} berhasil dikirim")
         return True
 
-    except requests.RequestException as e:
+    except requests.RequestException as error:
 
-        print(
-            f"❌ Gagal kirim "
-            f"{customer_type.upper()} "
-            f"ke HD Work: "
-            f"{e}"
-        )
-
+        print(f"❌ Gagal kirim {label} ke HD Work: {error}")
         return False
+
+
+def send_to_hdwork(customer_type, devices, scans):
+
+    payload = {
+        "source": "cacti",
+        "customer_type": customer_type,
+        "collector": NAMA_PC,
+        "scans": scans,
+        "devices": devices,
+    }
+
+    return post_to_hdwork(payload, f"data {customer_type.upper()}")
+
+
+def health_failure_kind(error):
+    message = str(error).lower()
+    login_markers = [
+        "login gagal",
+        "token csrf",
+        "session cacti tidak valid",
+    ]
+    return "login" if any(marker in message for marker in login_markers) else "connection"
+
+
+def build_health_scans(customer_type, scans):
+    return [
+        {
+            **scan,
+            "server": f"{customer_type.upper()} {scan['server'].upper()}",
+            "failure_kind": health_failure_kind(scan["error"])
+            if scan["status"] != "success" else None,
+        }
+        for scan in scans
+    ]
+
+
+def send_health_to_hdwork(scans):
+    payload = {
+        "source": "cacti",
+        "customer_type": "health",
+        "collector": NAMA_PC,
+        "health_report": True,
+        "scans": scans,
+    }
+    return post_to_hdwork(payload, "health Cacti")
 
 
 # =========================================================
@@ -512,10 +495,6 @@ def gass():
 
     print()
     print("=" * 60)
-
-    health = {
-        "cacti_ping": ping_cacti(),
-    }
 
     print(
         "🚀 CACTI COLLECTOR START"
@@ -539,7 +518,6 @@ def gass():
         "nodeb",
         nodeb_devices,
         nodeb_scans,
-        health,
     )
 
     # =====================================================
@@ -554,7 +532,11 @@ def gass():
         "datin",
         datin_devices,
         datin_scans,
-        health,
+    )
+
+    send_health_to_hdwork(
+        build_health_scans("nodeb", nodeb_scans)
+        + build_health_scans("datin", datin_scans)
     )
 
     print()

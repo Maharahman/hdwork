@@ -9,13 +9,22 @@ async function receiveCacti(req, res, next) {
       collector,
       scans = [],
       devices = [],
-      health = {},
+      health_report = false,
     } = req.body;
 
     if (!customer_type) {
       return res.status(400).json({
         success: false,
         message: "customer_type wajib diisi"
+      });
+    }
+
+    if (health_report) {
+      await recordCollectorHealth({ collector, scans });
+      return res.json({
+        success: true,
+        collector,
+        summary: { scans: scans.length },
       });
     }
 
@@ -231,8 +240,6 @@ async function receiveCacti(req, res, next) {
         }
       }
     }
-
-    await recordCollectorHealth({ collector, customerType: customer_type, health, scans });
 
     console.log("CACTI RESULT:", {
       customer_type,

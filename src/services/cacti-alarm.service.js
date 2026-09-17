@@ -20,9 +20,8 @@ function formatAlarmMessage(customerType, devices) {
   return rows.join("\n");
 }
 
-function formatCollectorHealthMessage(customerType, health) {
-  const label = String(customerType || "").toUpperCase();
-  const rows = [`⚠️ HEALTH COLLECTOR CACTI ${label}`, "", `Collector: ${displayValue(health.collector)}`];
+function formatCollectorHealthMessage(health) {
+  const rows = ["⚠️ JALUR VPN / CACTI TERPUTUS", "", `Collector: ${displayValue(health.collector)}`];
 
   health.problems.forEach((problem) => rows.push(`• ${problem}`));
 
@@ -30,12 +29,12 @@ function formatCollectorHealthMessage(customerType, health) {
   return rows.join("\n");
 }
 
-function formatCollectorRecoveredMessage(customerType, collector) {
+function formatCollectorRecoveredMessage(collector) {
   return [
-    `✅ HEALTH COLLECTOR CACTI ${String(customerType || "").toUpperCase()} PULIH`,
+    "✅ JALUR VPN / CACTI PULIH",
     "",
     `Collector: ${displayValue(collector)}`,
-    "Pengiriman data, jalur Cacti, dan scan terakhir kembali normal.",
+    "Minimal satu jalur Cacti kembali dapat diakses. Pengiriman alarm ONT dilanjutkan.",
   ].join("\n");
 }
 
