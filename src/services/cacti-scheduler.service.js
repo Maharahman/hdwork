@@ -78,13 +78,7 @@ async function sendActiveAlarms() {
 
   for (const [customerType, devices] of devicesByCustomerType) {
     const destination = await telegramRepository.getAlarmDestination(customerType);
-    const subscribers = await telegramRepository.getAlarmSubscribers(customerType);
     const batches = splitAlarmDevices(customerType, devices);
-
-    if (!destination && !subscribers.length) {
-      console.warn(`Tujuan alarm Telegram Cacti belum terdaftar: ${customerType}`);
-      continue;
-    }
 
     for (const batch of batches) {
       const message = formatAlarmMessage(customerType, batch);
@@ -96,8 +90,17 @@ async function sendActiveAlarms() {
         );
         if (!delivery.delivered) console.error(`Alarm Cacti ${customerType} gagal dikirim: ${delivery.error}`);
       }
+    }
 
-      for (const subscriber of subscribers) {
+    const personalDevices = await personalAlarmDevices(customerType, devices);
+    if (!destination && !personalDevices.size) {
+      console.warn(`Tujuan alarm Telegram Cacti belum terdaftar: ${customerType}`);
+      continue;
+    }
+
+    for (const { subscriber, devices: subscriberDevices } of personalDevices.values()) {
+      for (const batch of splitAlarmDevices(customerType, subscriberDevices)) {
+        const message = formatAlarmMessage(customerType, batch);
         const delivery = await telegramService.sendPersonalAlarmMessage(subscriber.telegram_chat_id, message);
         if (delivery.delivered) continue;
 
@@ -108,6 +111,33 @@ async function sendActiveAlarms() {
       }
     }
   }
+}
+
+async function personalAlarmDevices(customerType, devices) {
+  const recipients = new Map();
+  if (customerType === "datin") {
+    const subscribers = await telegramRepository.getDatinSubscribersByGroupNames(devices.map((device) => device.group_name || device.group));
+    const subscribersByGroup = new Map();
+    for (const subscriber of subscribers) {
+      const key = subscriber.normalized_name;
+      if (!subscribersByGroup.has(key)) subscribersByGroup.set(key, []);
+      subscribersByGroup.get(key).push(subscriber);
+    }
+    for (const device of devices) {
+      const group = telegramRepository.normalizeDatinGroupName(device.group_name || device.group);
+      for (const subscriber of subscribersByGroup.get(group) || []) {
+        const key = String(subscriber.telegram_user_id);
+        if (!recipients.has(key)) recipients.set(key, { subscriber, devices: [] });
+        recipients.get(key).devices.push(device);
+      }
+    }
+    return recipients;
+  }
+
+  for (const subscriber of await telegramRepository.getAlarmSubscribers(customerType)) {
+    recipients.set(String(subscriber.telegram_user_id), { subscriber, devices: [...devices] });
+  }
+  return recipients;
 }
 
 function healthProblems(row) {

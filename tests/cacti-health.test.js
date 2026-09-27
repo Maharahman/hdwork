@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const { healthProblems } = require("../src/services/cacti-scheduler.service");
+const { normalizeDatinGroupName } = require("../src/repositories/telegram.repository");
 
 function row(scans) {
   return { last_scan_summary: JSON.stringify(scans) };
@@ -34,4 +35,8 @@ test("health stays safe when one Cacti scan succeeds or a login fails", () => {
     { server: "DATIN SBS", status: "failed", failure_kind: "login" },
     { server: "DATIN SBU", status: "failed", failure_kind: "login" },
   ])), []);
+});
+
+test("DATIN aliases normalize spacing and case before subscriber matching", () => {
+  assert.equal(normalizeDatinGroupName("  Bank   Jatim "), "BANK JATIM");
 });

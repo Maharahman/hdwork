@@ -5,6 +5,10 @@ const alarmCategoryByCustomerType = {
   datin: "ALARM_DATIN",
 };
 
+function normalizeDatinGroupName(value) {
+  return String(value || "").trim().replace(/\s+/g, " ").toUpperCase();
+}
+
 async function getCities() {
   const [rows] = await pool.query(
     "SELECT id, name FROM cities ORDER BY name ASC",
@@ -280,6 +284,84 @@ async function getAlarmSubscriptions(userId) {
   return rows;
 }
 
+async function getDatinInstitutions(page = 0, pageSize = 8) {
+  const offset = Math.max(0, Number(page) || 0) * pageSize;
+  const [[countRow]] = await pool.query("SELECT COUNT(*) AS total FROM datin_institutions WHERE is_active = 1");
+  const [rows] = await pool.query(
+    "SELECT id, name FROM datin_institutions WHERE is_active = 1 ORDER BY name ASC LIMIT ? OFFSET ?",
+    [pageSize, offset],
+  );
+  return { institutions: rows, total: Number(countRow.total), page: Math.floor(offset / pageSize), pageSize };
+}
+
+async function getDatinSubscriptionIds(userId) {
+  const [rows] = await pool.query(
+    "SELECT institution_id FROM telegram_datin_subscriptions WHERE telegram_user_id = ? AND is_active = 1",
+    [userId],
+  );
+  return rows.map((row) => Number(row.institution_id));
+}
+
+async function toggleDatinSubscription(userId, institutionId) {
+  const [rows] = await pool.query(
+    "SELECT is_active FROM telegram_datin_subscriptions WHERE telegram_user_id = ? AND institution_id = ? LIMIT 1",
+    [userId, institutionId],
+  );
+  const nextActive = !(rows[0] && Number(rows[0].is_active) === 1);
+  await pool.query(
+    `
+    INSERT INTO telegram_datin_subscriptions (telegram_user_id, institution_id, is_active)
+    VALUES (?, ?, ?)
+    ON DUPLICATE KEY UPDATE is_active = VALUES(is_active), updated_at = CURRENT_TIMESTAMP
+    `,
+    [userId, institutionId, Number(nextActive)],
+  );
+  return nextActive;
+}
+
+async function clearDatinSubscriptions(userId) {
+  await pool.query(
+    "UPDATE telegram_datin_subscriptions SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE telegram_user_id = ?",
+    [userId],
+  );
+}
+
+async function getDatinSubscriptionNames(userId) {
+  const [rows] = await pool.query(
+    `
+    SELECT di.name
+    FROM telegram_datin_subscriptions tds
+    JOIN datin_institutions di ON di.id = tds.institution_id
+    WHERE tds.telegram_user_id = ? AND tds.is_active = 1
+    ORDER BY di.name ASC
+    `,
+    [userId],
+  );
+  return rows.map((row) => row.name);
+}
+
+async function getDatinSubscribersByGroupNames(groupNames) {
+  const normalizedNames = [...new Set(groupNames.map(normalizeDatinGroupName).filter(Boolean))];
+  if (!normalizedNames.length) return [];
+
+  const placeholders = normalizedNames.map(() => "?").join(", ");
+  const [rows] = await pool.query(
+    `
+    SELECT DISTINCT tas.telegram_user_id, tas.telegram_chat_id, dia.normalized_name
+    FROM datin_institution_aliases dia
+    JOIN telegram_datin_subscriptions tds
+      ON tds.institution_id = dia.institution_id AND tds.is_active = 1
+    JOIN telegram_alarm_subscribers tas
+      ON tas.telegram_user_id = tds.telegram_user_id
+      AND tas.customer_type = 'datin'
+      AND tas.is_active = 1
+    WHERE dia.normalized_name IN (${placeholders})
+    `,
+    normalizedNames,
+  );
+  return rows;
+}
+
 module.exports = {
   getCities,
   getSegments,
@@ -294,4 +376,11 @@ module.exports = {
   deactivateAlarmSubscriber,
   getAlarmSubscribers,
   getAlarmSubscriptions,
+  normalizeDatinGroupName,
+  getDatinInstitutions,
+  getDatinSubscriptionIds,
+  toggleDatinSubscription,
+  clearDatinSubscriptions,
+  getDatinSubscriptionNames,
+  getDatinSubscribersByGroupNames,
 };
