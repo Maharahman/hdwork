@@ -17,6 +17,8 @@ const cactyRoutes = require("./routes/cacty.routes")
 const app = express();
 
 app.use(cors());
+// The spreadsheet snapshot has its own bounded parser; register before the default 100 KB parser.
+app.use("/api/datin-sheet", require("./routes/datin-sheet-sync.routes"));
 app.use(express.json());
 app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
 
