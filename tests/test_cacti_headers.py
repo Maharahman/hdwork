@@ -64,6 +64,24 @@ class HeaderAgentTests(unittest.TestCase):
         self.assertEqual(client.ensure_header("BANK MANDIRI", apply=True)["action"], "verified_after_timeout")
         self.assertEqual(session.post.call_count, 1)
 
+    def test_header_create_keeps_action_outside_legacy_form(self):
+        client, session = self.client()
+        html = FORM.replace('<input type="hidden" name="action" value="save">', '') + '<input type="hidden" name="action" value="save">'
+        session.get.return_value.text = html
+        client.headers.side_effect = [{}, {"BANK MANDIRI": [{"header_id": 9527}]}]
+        client.ensure_header("BANK MANDIRI", apply=True)
+        self.assertEqual(session.post.call_args.kwargs['data']['action'], 'save')
+        self.assertEqual(session.post.call_args.kwargs['data']['__csrf_magic'], 'test-token')
+
+    def test_missing_or_duplicate_action_blocks_header_post(self):
+        for html in (FORM.replace('<input type="hidden" name="action" value="save">', ''), FORM + '<input name="action" value="save">'):
+            client, session = self.client()
+            session.get.return_value.text = html
+            client.headers.return_value = {}
+            with self.assertRaisesRegex(RuntimeError, 'action'):
+                client.ensure_header("BANK MANDIRI", apply=True)
+            session.post.assert_not_called()
+
     def test_duplicate_headers_block_writes(self):
         client, session = self.client()
         client.headers.return_value = {"BANK JATIM": [{"header_id": 1}, {"header_id": 2}]}

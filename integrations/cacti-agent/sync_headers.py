@@ -129,7 +129,12 @@ class Cacti:
         selected = item_type.select_one("option[selected]") or item_type.select_one("option") if item_type else None
         if not parent or not selected or selected.get_text(strip=True) != "Header":
             raise RuntimeError("Form bukan Header pada tingkat root.")
-        payload = form_payload(form)
+        # Legacy Cacti closes <form> before its final hidden action=save input.
+        # Scope only to a verified single-form create page, but collect all controls.
+        actions = soup.select('input[name="action"]')
+        if len(soup.select('form')) != 1 or len(actions) != 1 or actions[0].get('value') != 'save':
+            raise RuntimeError("Form create header/action tidak dikenali.")
+        payload = form_payload(soup)
         payload.update(title=title, parent_item_id="0", sort_children_type="1")
         target = urljoin(response.url, form.get("action") or "tree.php")
         self.require_local_url(target)
