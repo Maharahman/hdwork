@@ -2,6 +2,8 @@
 
 Sumber: `16tSELEZFzbH7FdI3NFqnNJx17xVf8GXgvZD5ghfxkLE`, tab `Sheet1`.
 Apps Script mengirim snapshot baris `STATUS = OK` melalui HTTPS setiap 10 menit.
+Versi terbaru juga mengirim inventaris nama instansi dari seluruh Sheet1 untuk
+memperbarui pilihan `/alarmdatin` dan membersihkan master yang benar-benar hilang.
 Jadwal Google bersifat berkala, tidak harus tepat pada menit 00/10/20.
 Menu `HD Work → Sinkronkan sekarang` tersedia saat spreadsheet dibuka ulang.
 
@@ -47,6 +49,62 @@ SID harus disimpan sebagai teks biasa (Plain text) di sumber. Script memakai nil
 - `STATUS` adalah status validasi spreadsheet, bukan status ONLINE/DOWN dari Cacti.
 - Master ini disimpan terpisah pada `datin_customer_master`; sinkron tidak menulis ke `cacti_alarms`, mengubah Cacti, atau mengirim Telegram.
 - Akses Google hanya diperlukan di Apps Script. Server tidak membutuhkan konektor Google Drive atau service account.
+
+## Sinkronisasi pilihan instansi Telegram (mode pengembangan)
+
+Data pelanggan `datin_customer_master` tetap mengikuti aturan di atas: hanya OK
+valid yang diperbarui, data lama yang ditahan tidak dihapus. Aturan pembersihan
+berikut hanya untuk `datin_institutions`, alias, dan pilihan subscriber.
+
+- Instansi baru dibuat dari nama unik pada baris OK yang lolos validasi/SID konflik.
+- Nama dicocokkan memakai normalisasi case/spasi dan alias eksplisit, bukan fuzzy.
+  ID master yang masih sesuai dipertahankan agar pilihan user tidak hilang.
+- `BANK CENTRAL ASIA` diberi alias ke master `BANK CENTRAL ASIA TBK (BANK BCA)`;
+  `BANK DANAMON` ke `BANK DANAMON INDONESIA TBK`. Tidak membuat master pendek ganda.
+- Nama baru seperti `DISKOMINFO KAB SUMENEP` menjadi master tersendiri. User tetap
+  harus memilihnya; sinkron tidak mendaftarkan user ke instansi baru otomatis.
+- Inventaris `institution_inventory` memuat nama dan status dari seluruh Sheet1,
+  termasuk NOT dan SID konflik. Nama tersebut melindungi master lama dari
+  penghapusan, tetapi tidak membuat master baru bila hanya NOT/konflik.
+- Setelah snapshot lengkap/nonkosong yang konsisten, master yang tidak lagi
+  disebut oleh nama maupun alias di seluruh Sheet1 dihapus. Pilihan subscriber
+  dan alias terkait dihapus lebih dulu dalam transaksi yang sama.
+- Ini mencakup master awal/manual yang sudah tidak ada di spreadsheet, sesuai
+  keputusan masa pengembangan. Tidak menghapus akun subscriber Telegram, master
+  pelanggan, alarm, device/header Cacti, atau mapping device/header.
+- Nama yang berubah tanpa alias dianggap instansi baru dan nama lama dapat
+  dibersihkan. Tambahkan alias eksplisit sebelum mengganti nama jika ID/pilihan
+  lama harus dipertahankan. Master/alias ambigu ditolak, bukan digabung diam-diam.
+- Pembersihan ditahan bila inventaris tidak lengkap/kosong, ada baris berisi data
+  tanpa nama, tidak ada OK yang lolos, atau jumlah baris/nama turun 50% atau lebih
+  dari baseline terakhir yang terpercaya. Baseline tidak diturunkan saat ditahan.
+  Periksa spreadsheet dan ringkasan sebelum mempertimbangkan penyesuaian manual;
+  jangan mengubah riwayat audit untuk memaksa penghapusan.
+- Inventaris salah format/tidak cocok dengan baris OK ditolak sebelum penulisan.
+  Kegagalan database membatalkan seluruh snapshot termasuk pelanggan/instansi.
+- Ringkasan `summary.institutions` menyimpan jumlah dibuat, alias ditambah,
+  master/alias/pilihan subscriber dihapus, daftar ID/nama yang dihapus, serta
+  alasan pembersihan ditahan. Retry run ID yang sama tidak menghapus ulang.
+- Tombol Telegram lama untuk instansi yang sudah dihapus akan memuat ulang daftar,
+  bukan membuat langganan ke ID yang tidak ada. Halaman juga dijepit ke rentang baru.
+
+### Cara mengaktifkan update ini
+
+1. Deploy backend terbaru dan restart proses backend. Tidak ada migrasi SQL baru;
+   tabel master instansi, alias, dan subscriptions dari migrasi DATIN sebelumnya
+   harus sudah tersedia.
+2. Ganti kode Apps Script dengan versi terbaru `integrations/google-apps-script/datin-sync.gs`.
+   Properties URL/key dan trigger 10 menit yang sudah ada tidak perlu dibuat ulang.
+3. Jalankan **HD Work → Sinkronkan sekarang** sekali dan periksa ringkasannya.
+   Sinkron pertama dapat menghapus master awal yang sudah tidak ada di Sheet1
+   beserta pilihan subscriber terkait. Backup bila pilihan lama masih dibutuhkan.
+4. Kirim ulang `/alarmdatin` untuk memuat daftar terbaru; pengguna tidak perlu
+   register ulang akun atau kehilangan pilihan untuk instansi yang ID-nya bertahan.
+
+Backend terbaru dengan Apps Script lama tetap menyinkronkan pelanggan, tetapi
+sinkron instansi berstatus SKIPPED dan tidak membersihkan apa pun. Memasang backend
+saja belum mengaktifkan fitur ini. Pengiriman seluruh alarm DATIN ke grup tetap
+sama; alias memengaruhi pencocokan instansi untuk filter japri.
 
 ```sql
 SELECT sid, customer_name, source_row, last_synced_at

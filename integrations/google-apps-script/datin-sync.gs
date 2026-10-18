@@ -16,7 +16,7 @@ function onOpen() {
     .addToUi();
 }
 
-function readDatinRows_(grid) {
+function readDatinSnapshot_(grid) {
   if (!grid.length) throw new Error('Sheet1 tidak memiliki header.');
   const headers = grid[0].map(function (value) { return String(value).trim().toUpperCase().replace(/\s+/g, ' '); });
   const columns = {};
@@ -27,15 +27,26 @@ function readDatinRows_(grid) {
     columns[key] = index;
   });
   const rows = [];
+  const institutionRows = [];
+  let blankRows = 0;
   grid.slice(1).forEach(function (values, index) {
-    if (String(values[columns.status] || '').trim().toUpperCase() !== 'OK') return;
     const row = { source_row: index + 2 };
     Object.keys(columns).forEach(function (key) {
       row[key] = String(values[columns[key]] == null ? '' : values[columns[key]]).trim();
     });
+    if (Object.keys(columns).every(function (key) { return row[key] === ''; })) { blankRows += 1; return; }
+    institutionRows.push({ source_row: row.source_row, customer_name: row.customer_name, status: row.status });
+    if (row.status.toUpperCase() !== 'OK') return;
     rows.push(row);
   });
-  return rows;
+  return {
+    rows: rows,
+    institution_inventory: { version: 1, complete: true, total_rows: grid.length - 1, blank_rows: blankRows, rows: institutionRows }
+  };
+}
+
+function readDatinRows_(grid) {
+  return readDatinSnapshot_(grid).rows;
 }
 
 function runDatinSync_() {
@@ -50,10 +61,11 @@ function runDatinSync_() {
     const sheet = spreadsheet.getSheetByName('Sheet1');
     if (!sheet) throw new Error('Tab Sheet1 tidak ditemukan.');
     const snapshotAt = new Date().toISOString();
-    const rows = readDatinRows_(sheet.getDataRange().getDisplayValues());
+    const contents = readDatinSnapshot_(sheet.getDataRange().getDisplayValues());
     const payload = JSON.stringify({
       spreadsheet_id: spreadsheet.getId(), sheet_name: sheet.getName(),
-      run_id: Utilities.getUuid(), snapshot_at: snapshotAt, rows: rows
+      run_id: Utilities.getUuid(), snapshot_at: snapshotAt, rows: contents.rows,
+      institution_inventory: contents.institution_inventory
     });
     let result;
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -86,6 +98,12 @@ function runDatinSync_() {
       'Baru: ' + summary.created + ' · Diperbarui: ' + summary.updated + ' · Tetap: ' + summary.unchanged,
       'SID konflik: ' + summary.conflicts.length + ' · Baris tidak valid: ' + summary.invalid_rows.length
     ];
+    if (summary.institutions) {
+      const institutions = summary.institutions;
+      lines.push('Instansi: ' + institutions.status + ' · Baru: ' + (institutions.created || 0) + ' · Dihapus: ' + (institutions.deleted || 0));
+      lines.push('Alias baru: ' + (institutions.aliases_added || 0) + ' · Pilihan subscriber dihapus: ' + (institutions.subscriptions_deleted || 0));
+      if (institutions.delete_skipped_reason) lines.push('Pembersihan ditahan: ' + institutions.delete_skipped_reason);
+    }
     summary.conflicts.slice(0, 15).forEach(function (conflict) {
       lines.push('SID ' + conflict.sid + ': baris ' + conflict.rows.join(', '));
     });

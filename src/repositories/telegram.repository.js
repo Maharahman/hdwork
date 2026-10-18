@@ -284,10 +284,12 @@ async function getAlarmSubscriptions(userId) {
   return rows;
 }
 
-async function getDatinInstitutions(page = 0, pageSize = 8) {
-  const offset = Math.max(0, Number(page) || 0) * pageSize;
-  const [[countRow]] = await pool.query("SELECT COUNT(*) AS total FROM datin_institutions WHERE is_active = 1");
-  const [rows] = await pool.query(
+async function getDatinInstitutions(page = 0, pageSize = 8, database = pool) {
+  const [[countRow]] = await database.query("SELECT COUNT(*) AS total FROM datin_institutions WHERE is_active = 1");
+  const lastPage = Math.max(0, Math.ceil(Number(countRow.total) / pageSize) - 1);
+  const currentPage = Math.min(lastPage, Math.max(0, Math.floor(Number(page) || 0)));
+  const offset = currentPage * pageSize;
+  const [rows] = await database.query(
     "SELECT id, name FROM datin_institutions WHERE is_active = 1 ORDER BY name ASC LIMIT ? OFFSET ?",
     [pageSize, offset],
   );
@@ -302,21 +304,32 @@ async function getDatinSubscriptionIds(userId) {
   return rows.map((row) => Number(row.institution_id));
 }
 
-async function toggleDatinSubscription(userId, institutionId) {
-  const [rows] = await pool.query(
-    "SELECT is_active FROM telegram_datin_subscriptions WHERE telegram_user_id = ? AND institution_id = ? LIMIT 1",
-    [userId, institutionId],
-  );
-  const nextActive = !(rows[0] && Number(rows[0].is_active) === 1);
-  await pool.query(
-    `
-    INSERT INTO telegram_datin_subscriptions (telegram_user_id, institution_id, is_active)
-    VALUES (?, ?, ?)
-    ON DUPLICATE KEY UPDATE is_active = VALUES(is_active), updated_at = CURRENT_TIMESTAMP
-    `,
-    [userId, institutionId, Number(nextActive)],
-  );
-  return nextActive;
+async function toggleDatinSubscription(userId, institutionId, database = pool) {
+  const connection = await database.getConnection();
+  try {
+    await connection.beginTransaction();
+    // A stale Telegram keyboard must not recreate a deleted institution/subscription.
+    const [institutions] = await connection.query("SELECT id FROM datin_institutions WHERE id = ? AND is_active = 1 FOR UPDATE", [institutionId]);
+    if (!institutions.length) { await connection.commit(); return null; }
+    const [rows] = await connection.query(
+      "SELECT is_active FROM telegram_datin_subscriptions WHERE telegram_user_id = ? AND institution_id = ? LIMIT 1",
+      [userId, institutionId],
+    );
+    const nextActive = !(rows[0] && Number(rows[0].is_active) === 1);
+    await connection.query(
+      `
+      INSERT INTO telegram_datin_subscriptions (telegram_user_id, institution_id, is_active)
+      VALUES (?, ?, ?)
+      ON DUPLICATE KEY UPDATE is_active = VALUES(is_active), updated_at = CURRENT_TIMESTAMP
+      `,
+      [userId, institutionId, Number(nextActive)],
+    );
+    await connection.commit();
+    return nextActive;
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally { connection.release(); }
 }
 
 async function clearDatinSubscriptions(userId) {

@@ -90,6 +90,24 @@ test("Apps Script maps reordered headers, preserves SID text, and excludes NOT r
   assert.throws(() => context.readDatinRows_([["SID", "STATUS"]]), /Header hilang/);
 });
 
+test("Apps Script sends a complete institution inventory including NOT/conflict/nameless rows", () => {
+  const context = vm.createContext({});
+  vm.runInContext(fs.readFileSync(require.resolve("../integrations/google-apps-script/datin-sync.gs"), "utf8"), context);
+  const headers = ["STATUS", "SID", "SERVICE", "KAT. PLGN", "NAME_CUSTOMER", "CUST_DETAIL", "ADDRESS", "NODE_AKSES", "FSP", "SN ONT / L2SW", "SLOT", "PORT", "ONU", "IP OLT", "SERVER"];
+  const result = JSON.parse(JSON.stringify(context.readDatinSnapshot_([headers,
+    ["OK", "duplicate", "", "", "BANK JATIM"], ["OK", "duplicate", "", "", "BANK JATIM"],
+    ["NOT", "000123", "", "", "HELD NOT"], [], ["NOT", "nameless"],
+  ])));
+  assert.equal(result.rows.length, 2);
+  assert.equal(result.institution_inventory.complete, true);
+  assert.equal(result.institution_inventory.total_rows, 5);
+  assert.equal(result.institution_inventory.blank_rows, 1);
+  assert.deepEqual(result.institution_inventory.rows.map((row) => row.source_row), [2, 3, 4, 6]);
+  assert.equal(result.institution_inventory.rows[2].customer_name, "HELD NOT");
+  assert.equal(result.institution_inventory.rows[3].customer_name, "");
+  assert.equal(prepareSnapshot({ ...snapshot(result.rows), institution_inventory: result.institution_inventory }).records.length, 0);
+});
+
 test("Apps Script retries the identical snapshot and installs only a 10 minute trigger", () => {
   const values = { HDWORK_SYNC_URL: "https://backend.example/sync", HDWORK_SYNC_KEY: "test-key" };
   const properties = {
@@ -122,6 +140,8 @@ test("Apps Script retries the identical snapshot and installs only a 10 minute t
   assert.equal(requests.length, 2);
   assert.equal(requests[0].payload, requests[1].payload);
   assert.equal(JSON.parse(requests[0].payload).rows[0].sid, "0001");
+  assert.equal(JSON.parse(requests[0].payload).institution_inventory.complete, true);
+  assert.equal(JSON.parse(requests[0].payload).institution_inventory.total_rows, 1);
   assert.match(values.HDWORK_LAST_SYNC, /Baru: 1/);
   context.installDatinSyncTrigger();
   assert.deepEqual(schedule, [{ name: "syncDatinScheduled", minutes: 10 }]);

@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const pool = require("../config/database");
+const { prepareInstitutionInventory, syncInstitutions } = require("./datin-institution-sync.service");
 
 const SOURCE_ID = "16tSELEZFzbH7FdI3NFqnNJx17xVf8GXgvZD5ghfxkLE";
 const FIELDS = ["sid", "service", "customer_category", "customer_name", "customer_detail", "address", "access_node", "fsp", "serial_number", "slot", "port", "onu", "olt_ip", "server", "status"];
@@ -51,11 +52,12 @@ function prepareSnapshot(payload) {
     record.hash = crypto.createHash("sha256").update(record.json).digest("hex");
     records.push(record);
   }
-  return { records, summary, snapshotAt };
+  const institutions = prepareInstitutionInventory(payload);
+  return { records, summary, snapshotAt, institutions };
 }
 
 async function syncSnapshot(payload, database = pool) {
-  const { records, summary, snapshotAt } = prepareSnapshot(payload);
+  const { records, summary, snapshotAt, institutions } = prepareSnapshot(payload);
   const connection = await database.getConnection();
   try {
     await connection.beginTransaction();
@@ -79,6 +81,17 @@ async function syncSnapshot(payload, database = pool) {
           data_json = VALUES(data_json), data_hash = VALUES(data_hash), last_synced_at = NOW(3), valid_snapshot_at = VALUES(valid_snapshot_at)
       `, [payload.spreadsheet_id, record.data.sid, record.source_row, record.data.customer_name, record.json, record.hash, snapshotAt]);
     }
+    let baseline = {};
+    if (institutions) {
+      const [[previousInventory]] = await connection.query(`SELECT result_json FROM datin_sheet_sync_runs
+        WHERE spreadsheet_id = ? AND JSON_EXTRACT(result_json, '$.summary.institutions.guard_rows') IS NOT NULL
+        ORDER BY snapshot_at DESC LIMIT 1`, [payload.spreadsheet_id]);
+      if (previousInventory) {
+        const storedResult = typeof previousInventory.result_json === "string" ? JSON.parse(previousInventory.result_json) : previousInventory.result_json;
+        baseline = storedResult?.summary?.institutions || {};
+      }
+    }
+    summary.institutions = await syncInstitutions(connection, institutions, records, baseline);
     const result = { success: true, run_id: payload.run_id, summary };
     await connection.query("INSERT INTO datin_sheet_sync_runs (run_id, spreadsheet_id, snapshot_at, result_json) VALUES (?, ?, ?, ?)", [payload.run_id, payload.spreadsheet_id, snapshotAt, JSON.stringify(result)]);
     await connection.query("UPDATE datin_sheet_sources SET last_snapshot_at = ? WHERE spreadsheet_id = ?", [snapshotAt, payload.spreadsheet_id]);
