@@ -93,7 +93,7 @@ async function reserveBatch(payload, database = pool, settings = config) {
 }
 
 async function authenticateBatch(connection, payload) {
-  if (payload?.batch_id !== config.batch_id || !/^[0-9a-f]{64}$/.test(payload?.token || "")) throw fail("Bukti batch tidak valid.", 403);
+  if (!(payload?.batch_id === config.batch_id || /^bulk-[0-9a-f-]{36}$/.test(payload?.batch_id || "")) || !/^[0-9a-f]{64}$/.test(payload?.token || "")) throw fail("Bukti batch tidak valid.", 403);
   const [rows] = await connection.query("SELECT * FROM datin_cacti_batch_runs WHERE batch_id = ? FOR UPDATE", [payload.batch_id]);
   const batch = rows[0];
   if (!batch || !crypto.timingSafeEqual(Buffer.from(batch.token_hash), Buffer.from(hash(payload.token)))) throw fail("Reservasi batch tidak dikenali.", 403);
@@ -136,7 +136,7 @@ async function finishBatch(payload, database = pool) {
       if (mappings.length !== 1) throw fail("Belum semua device batch terverifikasi.", 409);
     }
     await connection.query("UPDATE datin_cacti_batch_runs SET run_status = 'VERIFIED', verified_at = NOW() WHERE batch_id = ?", [payload.batch_id]);
-    return { success: true, state: "VERIFIED", devices: config.limit };
+    return { success: true, state: "VERIFIED", devices: parse(batch.manifest_json).length };
   });
 }
 

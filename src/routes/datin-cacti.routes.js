@@ -3,6 +3,7 @@ const crypto = require("crypto");
 const { getHeaderPlan, getDeviceSource, saveHeaderMappings, getDeviceMappings } = require("../services/datin-cacti-headers.service");
 const { pilotCapabilities, reservePilot, completePilot } = require("../services/datin-cacti-pilot.service");
 const { batchCapabilities, reserveBatch, bindBatchHeader, finishBatch } = require("../services/datin-cacti-batch.service");
+const { reserveBulk } = require("../services/datin-cacti-bulk.service");
 const router = express.Router();
 
 router.use((req, res, next) => {
@@ -43,6 +44,11 @@ router.post("/pilot-completions", async (req, res, next) => {
 });
 
 router.get("/batch-capabilities", (req, res) => res.json(batchCapabilities()));
+router.get("/bulk-capabilities", (req, res) => res.json({ success: true, version: 1, max_devices: 1000, resumable: true, create_only: true }));
+router.post("/bulk-reservations", async (req, res, next) => {
+  try { res.json(await reserveBulk(req.body)); }
+  catch (error) { if (error.statusCode) return res.status(error.statusCode).json({ success: false, message: error.message }); next(error); }
+});
 for (const [path, handler] of [["/batch-reservations", reserveBatch], ["/batch-headers", bindBatchHeader], ["/batch-completions", finishBatch]]) {
   router.post(path, async (req, res, next) => {
     try { res.json(await handler(req.body)); }
