@@ -73,11 +73,11 @@ async function syncSnapshot(payload, database = pool) {
       const hash = hashes.get(record.data.sid);
       summary[hash === undefined ? "created" : hash === record.hash ? "unchanged" : "updated"] += 1;
       await connection.query(`
-        INSERT INTO datin_customer_master (spreadsheet_id, sid, source_row, customer_name, data_json, data_hash, last_synced_at)
-        VALUES (?, ?, ?, ?, ?, ?, NOW(3))
+        INSERT INTO datin_customer_master (spreadsheet_id, sid, source_row, customer_name, data_json, data_hash, last_synced_at, valid_snapshot_at)
+        VALUES (?, ?, ?, ?, ?, ?, NOW(3), ?)
         ON DUPLICATE KEY UPDATE source_row = VALUES(source_row), customer_name = VALUES(customer_name),
-          data_json = VALUES(data_json), data_hash = VALUES(data_hash), last_synced_at = NOW(3)
-      `, [payload.spreadsheet_id, record.data.sid, record.source_row, record.data.customer_name, record.json, record.hash]);
+          data_json = VALUES(data_json), data_hash = VALUES(data_hash), last_synced_at = NOW(3), valid_snapshot_at = VALUES(valid_snapshot_at)
+      `, [payload.spreadsheet_id, record.data.sid, record.source_row, record.data.customer_name, record.json, record.hash, snapshotAt]);
     }
     const result = { success: true, run_id: payload.run_id, summary };
     await connection.query("INSERT INTO datin_sheet_sync_runs (run_id, spreadsheet_id, snapshot_at, result_json) VALUES (?, ?, ?, ?)", [payload.run_id, payload.spreadsheet_id, snapshotAt, JSON.stringify(result)]);

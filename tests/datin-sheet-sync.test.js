@@ -60,6 +60,7 @@ test("snapshot counts new, updated and unchanged records and keeps skipped SIDs 
   const writes = db.calls.filter((call) => call.sql?.includes("INSERT INTO datin_customer_master"));
   assert.equal(writes.length, 3);
   assert.equal(writes.some((call) => call.args[1] === "held"), false);
+  assert.ok(writes.every((call) => call.args[6].getTime() === Date.parse(payload.snapshot_at)));
   assert.ok(db.calls.includes("commit"));
   assert.equal(db.calls.includes("rollback"), false);
 });

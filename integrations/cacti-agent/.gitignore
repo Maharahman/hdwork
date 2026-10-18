@@ -1,0 +1,7 @@
+.env
+.sync_headers.lock
+__pycache__/
+*.report.json
+*.report.csv
+agent.log
+.venv/
