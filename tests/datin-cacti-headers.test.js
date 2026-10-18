@@ -98,6 +98,12 @@ test("Cacti agent endpoints reject the spreadsheet key and require their own key
   assert.equal((await fetch(mappingsUrl)).status, 401);
   assert.equal((await fetch(mappingsUrl, { headers: { "X-Cacti-Agent-Key": "wrong-key" } })).status, 403);
   assert.equal((await fetch(mappingsUrl, { method: "POST", headers: { "X-Cacti-Agent-Key": "agent-test-key" } })).status, 404);
+  for (const endpoint of ["batch-capabilities", "batch-reservations", "batch-headers", "batch-completions"]) {
+    const batchUrl = url.replace("header-plan", endpoint);
+    const method = endpoint === "batch-capabilities" ? "GET" : "POST";
+    assert.equal((await fetch(batchUrl, { method })).status, 401);
+    assert.equal((await fetch(batchUrl, { method, headers: { "X-Cacti-Agent-Key": "wrong" } })).status, 403);
+  }
 });
 
 test("device mappings are scoped to the source and read only; missing migration fails closed", async () => {

@@ -88,3 +88,11 @@ test("completion replay is idempotent and never overwrites another host", async 
   assert.ok(!calls.some((c) => c.sql?.includes("INSERT INTO datin_cacti_devices")));
   await assert.rejects(completePilot({ ...body, host_id: 43, receipt: { ...body.receipt, host_id: 43 } }, db), (e) => e.statusCode === 409);
 });
+
+test("device completion cannot run before the batch header is bound", async () => {
+  const { job, body } = completion();
+  job.header_id = 0;
+  const { db, calls } = dbFixture({ job });
+  await assert.rejects(completePilot({ ...body, receipt: { ...body.receipt, header_id: 0 } }, db), (e) => e.statusCode === 409);
+  assert.ok(!calls.some((c) => c.sql?.includes("INSERT INTO datin_cacti_devices")));
+});

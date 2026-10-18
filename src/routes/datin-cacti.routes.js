@@ -2,6 +2,7 @@ const express = require("express");
 const crypto = require("crypto");
 const { getHeaderPlan, getDeviceSource, saveHeaderMappings, getDeviceMappings } = require("../services/datin-cacti-headers.service");
 const { pilotCapabilities, reservePilot, completePilot } = require("../services/datin-cacti-pilot.service");
+const { batchCapabilities, reserveBatch, bindBatchHeader, finishBatch } = require("../services/datin-cacti-batch.service");
 const router = express.Router();
 
 router.use((req, res, next) => {
@@ -40,5 +41,13 @@ router.post("/pilot-completions", async (req, res, next) => {
   try { res.json(await completePilot(req.body)); }
   catch (error) { if (error.statusCode) return res.status(error.statusCode).json({ success: false, message: error.message }); next(error); }
 });
+
+router.get("/batch-capabilities", (req, res) => res.json(batchCapabilities()));
+for (const [path, handler] of [["/batch-reservations", reserveBatch], ["/batch-headers", bindBatchHeader], ["/batch-completions", finishBatch]]) {
+  router.post(path, async (req, res, next) => {
+    try { res.json(await handler(req.body)); }
+    catch (error) { if (error.statusCode) return res.status(error.statusCode).json({ success: false, message: error.message }); next(error); }
+  });
+}
 
 module.exports = router;

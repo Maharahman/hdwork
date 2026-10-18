@@ -1,0 +1,17 @@
+{
+  "batch_id": "datin-new-headers-10-v1",
+  "limit": 10,
+  "approved_sha256": "e8913db0015a0a12c8ff7ab51e3bb6d32ed082af6b8e03f890aa99b89aa81b07",
+  "targets": [
+    {"sid":"1110515952","server":"SBS","tree_id":34,"institution":"BANK CENTRAL ASIA"},
+    {"sid":"2091577385","server":"SBS","tree_id":34,"institution":"BANK DANAMON"},
+    {"sid":"2094788923","server":"SBS","tree_id":34,"institution":"BANK DANAMON"},
+    {"sid":"2094789069","server":"SBS","tree_id":34,"institution":"BANK DANAMON"},
+    {"sid":"2098959062","server":"SBS","tree_id":34,"institution":"BANK CENTRAL ASIA"},
+    {"sid":"1711507079","server":"SBU","tree_id":28,"institution":"BANK CENTRAL ASIA"},
+    {"sid":"1713792553","server":"SBU","tree_id":28,"institution":"BANK CENTRAL ASIA"},
+    {"sid":"1736952668","server":"SBU","tree_id":28,"institution":"BANK CENTRAL ASIA"},
+    {"sid":"3001068269-0031072592","server":"SBU","tree_id":28,"institution":"DISKOMINFO KAB SUMENEP"},
+    {"sid":"3001068269-0031073611","server":"SBU","tree_id":28,"institution":"DISKOMINFO KAB SUMENEP"}
+  ]
+}

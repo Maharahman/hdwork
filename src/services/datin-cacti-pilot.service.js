@@ -13,14 +13,14 @@ const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
 const json = (value) => typeof value === "string" ? JSON.parse(value) : value;
 const text = (value) => String(value ?? "").trim();
 
-function desiredDevice(row) {
+function desiredDevice(row, allowedInstitution = "BANK JATIM") {
   if (text(row.status).toUpperCase() !== "OK") throw fail("STATUS sumber wajib OK.", 409);
   const desired = Object.fromEntries(FIELDS.map((field) => [field, text(row[field])]));
   if (FIELDS.some((field) => !desired[field]) || ["slot", "port", "onu"].some((field) => !/^\d{1,3}$/.test(desired[field]))) {
     throw fail("Konfigurasi ONT kosong/tidak valid atau melebihi batas form.", 409);
   }
   if (!require("net").isIP(desired.olt_ip) || desired.serial_number.length > 50) throw fail("IP OLT atau SN tidak valid.", 409);
-  if (text(row.customer_name).replace(/\s+/g, " ").toUpperCase() !== "BANK JATIM") throw fail("Instansi pilot berubah; perlu persetujuan ulang.", 409);
+  if (text(row.customer_name).replace(/\s+/g, " ").toUpperCase() !== allowedInstitution) throw fail("Instansi pilot berubah; perlu persetujuan ulang.", 409);
   desired.description = "[HD-D] " + [row.sid, row.customer_name, row.customer_detail].map(text).filter(Boolean).join("_");
   if (desired.description.length > 250) throw fail("Description melebihi batas form.", 409);
   return desired;
@@ -87,6 +87,7 @@ async function completePilot(payload, database = pool) {
     const job = jobs[0];
     if (!job || !crypto.timingSafeEqual(Buffer.from(job.token_hash), Buffer.from(hash(payload.token)))) throw fail("Reservasi pilot tidak dikenali.", 403);
     const desired = json(job.desired_json), receipt = payload.receipt;
+    if (!Number.isSafeInteger(job.header_id) || job.header_id < 1) throw fail("Header belum diverifikasi/diikat pada reservasi.", 409);
     if (!receipt || Object.keys(desired).some((key) => receipt[key] !== desired[key])
         || receipt.server !== job.server || receipt.tree_id !== job.tree_id || receipt.header_id !== job.header_id
         || receipt.host_id !== payload.host_id || receipt.monitor !== true || receipt.disabled !== false

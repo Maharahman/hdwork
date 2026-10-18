@@ -83,6 +83,47 @@ def verify_host(client, host_id, row):
     return receipt
 
 
+def execute_reserved_device(client, row, journal, job, api):
+    """One reserved create/attach/read-back. Never retry Cacti POSTs."""
+    state = {'job': job, 'phase': 'RESERVED'}
+    save_journal(journal, state, exclusive=True)
+    response = client.session.get(client.base + '/host.php', params={'action': 'edit', 'host_template_id': -1, 'host_status': -1}, timeout=30)
+    checked_html(response)
+    action, payload = create_payload(response.text, row, row['creation_profile'])
+    target = urljoin(response.url, action)
+    client.require_local_url(target)
+    state['phase'] = 'CREATE_ATTEMPTED'
+    save_journal(journal, state)
+    client.session.post(target, data=payload, timeout=30, allow_redirects=False).raise_for_status()
+    matches = [d for d in fetch_inventory(client) if has_datin_identity(d['description'], row['sid'])]
+    if len(matches) != 1:
+        raise RuntimeError('Create belum terverifikasi unik; jangan ulang POST.')
+    host_id = matches[0]['host_id']
+    state.update(host_id=host_id, phase='HOST_READ_BACK')
+    save_journal(journal, state)
+    verify_host(client, host_id, row)
+    response = client.session.get(client.base + '/tree.php', params={'action': 'item_edit', 'tree_id': client.tree, 'parent_id': row['header_id'], 'type_select': 3}, timeout=30)
+    soup = checked_html(response)
+    action, payload = attach_payload(soup, row, host_id)
+    target = urljoin(response.url, action)
+    client.require_local_url(target)
+    state['phase'] = 'ATTACH_ATTEMPTED'
+    save_journal(journal, state)
+    client.session.post(target, data=payload, timeout=30, allow_redirects=False).raise_for_status()
+    response = client.session.get(client.base + '/tree.php', params={'action': 'edit', 'id': client.tree}, timeout=30)
+    checked_html(response)
+    memberships = parse_tree_memberships(response.text, client.tree).get(host_id, [])
+    if len(memberships) != 1 or memberships[0]['header_id'] != row['header_id']:
+        raise RuntimeError('Attach belum terverifikasi; jangan ulang otomatis.')
+    receipt = verify_host(client, host_id, row)
+    state.update(phase='TREE_READ_BACK', receipt=receipt)
+    save_journal(journal, state)
+    api.request('POST', '/api/datin-cacti/pilot-completions', {'job_id': job['job_id'], 'token': job['token'], 'host_id': host_id, 'receipt': receipt})
+    state['phase'] = 'VERIFIED'
+    save_journal(journal, state)
+    return host_id
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--preview', default=str(Path(__file__).with_name('pilot.report.json')))
@@ -146,43 +187,7 @@ def main():
             job = api.request('POST', '/api/datin-cacti/pilot-reservations', {
                 'spreadsheet_id': current['spreadsheet_id'], 'snapshot_at': current['snapshot_at'],
                 'sid': row['sid'], 'server': client.server, 'tree_id': row['tree_id'], 'header_id': row['header_id'], 'desired': desired})
-            state = {'job': job, 'phase': 'RESERVED'}
-            save_journal(journal, state, exclusive=True)
-            # Refresh CSRF/form after reservation. Never retry any Cacti creation POST.
-            response = client.session.get(client.base + '/host.php', params={'action': 'edit', 'host_template_id': -1, 'host_status': -1}, timeout=30)
-            checked_html(response)
-            action, payload = create_payload(response.text, row, row['creation_profile'])
-            target = urljoin(response.url, action)
-            client.require_local_url(target)
-            state['phase'] = 'CREATE_ATTEMPTED'
-            save_journal(journal, state)
-            client.session.post(target, data=payload, timeout=30, allow_redirects=False).raise_for_status()
-            matches = [d for d in fetch_inventory(client) if has_datin_identity(d['description'], row['sid'])]
-            if len(matches) != 1:
-                raise RuntimeError('Create belum terverifikasi unik; jangan ulang POST.')
-            host_id = matches[0]['host_id']
-            state.update(host_id=host_id, phase='HOST_READ_BACK')
-            save_journal(journal, state)
-            receipt = verify_host(client, host_id, row)
-            response = client.session.get(client.base + '/tree.php', params={'action': 'item_edit', 'tree_id': client.tree, 'parent_id': row['header_id'], 'type_select': 3}, timeout=30)
-            soup = checked_html(response)
-            action, payload = attach_payload(soup, row, host_id)
-            target = urljoin(response.url, action)
-            client.require_local_url(target)
-            state['phase'] = 'ATTACH_ATTEMPTED'
-            save_journal(journal, state)
-            client.session.post(target, data=payload, timeout=30, allow_redirects=False).raise_for_status()
-            response = client.session.get(client.base + '/tree.php', params={'action': 'edit', 'id': client.tree}, timeout=30)
-            checked_html(response)
-            memberships = parse_tree_memberships(response.text, client.tree).get(host_id, [])
-            if len(memberships) != 1 or memberships[0]['header_id'] != row['header_id']:
-                raise RuntimeError('Attach belum terverifikasi; jangan ulang otomatis.')
-            receipt = verify_host(client, host_id, row)
-            state.update(phase='TREE_READ_BACK', receipt=receipt)
-            save_journal(journal, state)
-            api.request('POST', '/api/datin-cacti/pilot-completions', {'job_id': job['job_id'], 'token': job['token'], 'host_id': host_id, 'receipt': receipt})
-            state['phase'] = 'VERIFIED'
-            save_journal(journal, state)
+            host_id = execute_reserved_device(client, row, journal, job, api)
             print(f'{client.server}: pilot {row["sid"]} terverifikasi, host ID {host_id}, mapping tersimpan.')
         return 0
     except Exception as error:

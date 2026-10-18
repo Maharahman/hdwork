@@ -102,6 +102,30 @@ class PilotApplyTests(unittest.TestCase):
                     state = json.loads((directory / 'pilot-SBS.report.json').read_text())
                     self.assertEqual(state['phase'], 'CREATE_ATTEMPTED')
 
+    def test_reserved_pipeline_creates_attaches_and_completes_once(self):
+        for attach_fails in (False, True):
+            with self.subTest(attach_fails=attach_fails), tempfile.TemporaryDirectory() as directory:
+                row = {**plan(), 'tree_id': 34}
+                row['creation_profile'] = creation_profile(form(), row)
+                tree_form = '<form action="tree.php"><input name="graph_tree_id" value="34"><input name="type" value="3"><input name="id" value="0"><input name="action" value="save"><select name="parent_item_id"><option value="9127" selected>BANK JATIM</option></select><select name="host_id"><option value="42">new</option></select></form>'
+                c = Mock(server='SBS', tree=34, base='http://cacti/ont')
+                c.session.get.side_effect = [Mock(text=form(), url=c.base + '/host.php'), Mock(text=tree_form, url=c.base + '/tree.php'), Mock(text='<table></table>')]
+                if attach_fails:
+                    c.session.post.side_effect = [Mock(), TimeoutError('uncertain attach')]
+                api = Mock()
+                journal = Path(directory) / 'job.report.json'
+                with patch.object(apply, 'fetch_inventory', return_value=[{'host_id': 42, 'description': row['description']}]), patch.object(apply, 'verify_host', return_value={'verified': True}) as verify, patch.object(apply, 'parse_tree_memberships', return_value={42: [{'header_id': 9127}]}):
+                    if attach_fails:
+                        with self.assertRaises(TimeoutError):
+                            apply.execute_reserved_device(c, row, journal, {'job_id': 'job', 'token': 'secret'}, api)
+                        api.request.assert_not_called()
+                    else:
+                        self.assertEqual(apply.execute_reserved_device(c, row, journal, {'job_id': 'job', 'token': 'secret'}, api), 42)
+                        self.assertEqual(verify.call_count, 2)
+                        api.request.assert_called_once_with('POST', '/api/datin-cacti/pilot-completions', {'job_id': 'job', 'token': 'secret', 'host_id': 42, 'receipt': {'verified': True}})
+                self.assertEqual(c.session.post.call_count, 2)
+                self.assertEqual(json.loads(journal.read_text())['phase'], 'ATTACH_ATTEMPTED' if attach_fails else 'VERIFIED')
+
 
 if __name__ == '__main__':
     unittest.main()
