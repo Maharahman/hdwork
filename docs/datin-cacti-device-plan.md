@@ -62,6 +62,27 @@ bukan antrean eksekusi yang boleh dipakai ulang tanpa inventaris baru.
 
 ## Sebelum tahap pembuatan
 
+Siapkan dua target uji beserta profil form live, tanpa menulis ke Cacti:
+
+```bash
+/usr/local/bin/python3 integrations/cacti-agent/pilot_preview.py
+```
+
+Script memilih satu calon CREATE per server yang headernya sudah ada, memprioritaskan
+SID tanpa kandidat eksternal dan instansi BANK JATIM. Jika tidak ada calon yang
+memenuhi syarat, proses berhenti. Target dapat dipilih dengan `--sbs-sid SID`
+dan `--sbu-sid SID`. Output `pilot.report.json` adalah pratinjau, bukan izin apply.
+Script tidak mempunyai opsi apply dan tidak membuat header baru.
+
+Profil dibaca dari form device baru. Cacti SBS/SBU yang diperiksa memakai template
+None, device detection Ping, ICMP Ping, dan SNMP Not In Use. Monitor Host direncanakan
+aktif dan Disable Host nonaktif, seperti alur input sebelumnya. Ini opsi monitoring
+device Cacti, bukan mengaktifkan kembali ping untuk health VPN collector. Description
+maksimal 250 karakter, slot/port/ONU maksimal 3 karakter, SN mengikuti batas form.
+Nilai terlalu panjang tidak dipotong otomatis. Perubahan default form, snapshot,
+atau mapping selama scan menyebabkan pratinjau ditolak. CSRF dan kredensial form
+tidak disimpan di laporan.
+
 Tinjau beberapa SID di tiap server beserta form device, opsi template/monitor,
 batas panjang Description, dan hasil konfigurasi yang diinginkan. Lalu lakukan
 uji create terpisah setelah persetujuan. Pembuatan harus membaca kembali host ID,
