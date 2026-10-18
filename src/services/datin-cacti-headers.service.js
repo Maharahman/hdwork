@@ -95,4 +95,19 @@ async function saveHeaderMappings(payload, database = pool) {
   finally { connection.release(); }
 }
 
-module.exports = { groupInstitutions, getHeaderPlan, getDeviceSource, saveHeaderMappings };
+async function getDeviceMappings(database = pool) {
+  const { spreadsheetId, rows } = await latestSourceRows(database);
+  let mappings;
+  try {
+    [mappings] = await database.query(`
+      SELECT sid, server, tree_id, host_id, header_id, ownership_status, verified_at
+      FROM datin_cacti_devices WHERE spreadsheet_id = ?
+    `, [spreadsheetId]);
+  } catch (error) {
+    if (error.code === "ER_NO_SUCH_TABLE") throw fail("Jalankan migrasi 20261019_add_datin_cacti_devices.sql terlebih dahulu.", 503);
+    throw error;
+  }
+  return { success: true, spreadsheet_id: spreadsheetId, snapshot_at: rows[0].last_snapshot_at, mappings };
+}
+
+module.exports = { groupInstitutions, getHeaderPlan, getDeviceSource, saveHeaderMappings, getDeviceMappings };

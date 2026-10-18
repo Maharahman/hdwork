@@ -1,6 +1,6 @@
 const express = require("express");
 const crypto = require("crypto");
-const { getHeaderPlan, getDeviceSource, saveHeaderMappings } = require("../services/datin-cacti-headers.service");
+const { getHeaderPlan, getDeviceSource, saveHeaderMappings, getDeviceMappings } = require("../services/datin-cacti-headers.service");
 const router = express.Router();
 
 router.use((req, res, next) => {
@@ -19,6 +19,10 @@ router.get("/header-plan", async (req, res, next) => {
 });
 router.get("/device-source", async (req, res, next) => {
   try { res.json(await getDeviceSource()); }
+  catch (error) { if (error.statusCode) return res.status(error.statusCode).json({ success: false, message: error.message }); next(error); }
+});
+router.get("/device-mappings", async (req, res, next) => {
+  try { res.json(await getDeviceMappings()); }
   catch (error) { if (error.statusCode) return res.status(error.statusCode).json({ success: false, message: error.message }); next(error); }
 });
 router.post("/header-mappings", async (req, res, next) => {

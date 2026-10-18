@@ -16,9 +16,21 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
 from sync_headers import Cacti, HDWork, SERVERS, checked_html, normalize
+from device_plan import build_device_plan
 
 
 FIELDS = {"olt_ip": "hostname", "slot": "slot", "port": "port", "onu": "onu_id", "serial_number": "onu_sn"}
+DEVICE_PREFIX = "[HD-D]"
+
+
+def has_datin_identity(description, sid):
+    # The managed SID must immediately follow the marker, not occur in site text.
+    return bool(re.match(r"^\[HD-D\]\s+" + re.escape(str(sid)) + r"(?=$|[_\s])", description.strip()))
+
+
+def planned_description(customer):
+    parts = [str(customer.get(key) or "").strip() for key in ("sid", "customer_name", "customer_detail")]
+    return DEVICE_PREFIX + " " + "_".join(part for part in parts if part)
 
 
 def contains_sid(description, sid):
@@ -32,14 +44,14 @@ def canonical_name(value, aliases):
 
 
 def canonical_number(value):
-    text = str(value or "").strip()
+    text = str(value if value is not None else "").strip()
     return str(int(text)) if re.fullmatch(r"\d+", text) else text
 
 
 def validate_customer(customer):
     reasons = []
     for field in ("sid", "customer_name", "olt_ip", "slot", "port", "onu", "serial_number"):
-        if not str(customer.get(field) or "").strip():
+        if customer.get(field) is None or not str(customer[field]).strip():
             reasons.append(f"Kolom {field} kosong")
     if normalize(customer.get("status", "")) != "OK":
         reasons.append("STATUS bukan OK")
@@ -51,17 +63,33 @@ def validate_customer(customer):
         except ValueError:
             reasons.append("IP OLT tidak valid")
     for field in ("slot", "port", "onu"):
-        text = str(customer.get(field) or "").strip()
-        if text and (not re.fullmatch(r"\d+", text) or int(text) < 1):
-            reasons.append(f"{field} harus bilangan bulat positif")
+        value = customer.get(field)
+        text = str(value if value is not None else "").strip()
+        if text and not re.fullmatch(r"\d+", text):
+            reasons.append(f"{field} harus bilangan bulat non-negatif (0 diperbolehkan)")
     return reasons
 
 
-def parse_device_list(html):
+def parse_device_total(html):
     soup = BeautifulSoup(html, "html.parser")
     count = re.search(r"Showing\s+Rows\s+\d+\s+to\s+\d+\s+of\s+([\d,]+)", soup.get_text(" ", strip=True), re.IGNORECASE)
     if not count:
         raise RuntimeError("Jumlah total Devices tidak terbaca; inventaris dianggap belum lengkap.")
+    return int(count.group(1).replace(",", ""))
+
+
+def parse_device_list(html, expected_total=None):
+    soup = BeautifulSoup(html, "html.parser")
+    # Cacti omits the numeric total when the entire inventory fits on one page.
+    # In that case require an independent total from a paginated request.
+    if re.search(r"\bShowing\s+All\s+Rows\b", soup.get_text(" ", strip=True), re.IGNORECASE):
+        if expected_total is None:
+            raise RuntimeError("Jumlah total Devices tidak terbaca; inventaris dianggap belum lengkap.")
+        total = expected_total
+    else:
+        total = parse_device_total(html)
+        if expected_total is not None and total != expected_total:
+            raise RuntimeError("Jumlah Devices berubah selama pembacaan; ulangi inventaris.")
     devices = {}
     for link in soup.select('a[href]'):
         url = urlparse(link["href"])
@@ -72,7 +100,6 @@ def parse_device_list(html):
                 continue
             host_id = int(query["id"][0])
             devices[host_id] = {"host_id": host_id, "description": description, "memberships": []}
-    total = int(count.group(1).replace(",", ""))
     if len(devices) != total:
         raise RuntimeError(f"Daftar Devices belum lengkap: terbaca {len(devices)} dari {total}. Tidak membuat kesimpulan SID belum ditemukan.")
     return list(devices.values())
@@ -132,10 +159,12 @@ def compare(customers, inventory, aliases=None, protected=None, source_conflicts
     for customer in customers:
         sid = customer["sid"].strip()
         server = normalize(customer.get("server", ""))
-        matches = [device for device in inventory if contains_sid(device["description"], sid)]
+        sid_matches = [device for device in inventory if contains_sid(device["description"], sid)]
+        matches = [device for device in sid_matches if has_datin_identity(device["description"], sid)]
+        external = [device for device in sid_matches if not has_datin_identity(device["description"], sid)]
         local = [device for device in matches if device["server"] == server]
         elsewhere = [device for device in matches if device["server"] != server]
-        for device in matches:
+        for device in sid_matches:
             referenced.add((device["server"], device["host_id"]))
         issues = validate_customer(customer)
         status = "MATCH"
@@ -144,7 +173,7 @@ def compare(customers, inventory, aliases=None, protected=None, source_conflicts
         if counts[sid.upper()] > 1 or len(local) > 1:
             status = "AMBIGUOUS"
             issues.append("SID sumber atau device pada server tujuan ditemukan lebih dari satu")
-        elif any(is_protected(device, protected) for device in matches):
+        elif any(is_protected(device, protected) for device in matches) or (not matches and any(is_protected(device, protected) for device in external)):
             status = "PROTECTED"
             issues.append("SID bersinggungan dengan perangkat/header monitoring khusus")
         elif issues:
@@ -155,6 +184,9 @@ def compare(customers, inventory, aliases=None, protected=None, source_conflicts
         elif not local and elsewhere:
             status = "OTHER_SERVER"
             issues.append("SID hanya ditemukan pada server berbeda")
+        elif not matches and external:
+            status = "EXTERNAL_ONLY"
+            issues.append("SID hanya ditemukan pada device tanpa identitas [HD-D] yang sesuai; jangan edit/hapus atau ambil alih otomatis")
         elif not local:
             status = "NOT_FOUND"
             issues.append("SID tidak ditemukan pada nama seluruh device; bukan izin membuat device baru")
@@ -163,7 +195,8 @@ def compare(customers, inventory, aliases=None, protected=None, source_conflicts
             issues.append(local[0].get("detail_error") or "Form detail device belum terbaca")
         else:
             for source_field, cacti_field in FIELDS.items():
-                expected = str(customer.get(source_field) or "").strip()
+                value = customer.get(source_field)
+                expected = str(value if value is not None else "").strip()
                 actual = detail[cacti_field]
                 if source_field in ("slot", "port", "onu"):
                     expected, actual = canonical_number(expected), canonical_number(actual)
@@ -180,15 +213,16 @@ def compare(customers, inventory, aliases=None, protected=None, source_conflicts
                 issues.append("IP OLT/slot/port/ONU/SN berbeda")
             elif issues:
                 status = "HEADER_DIFF"
-            if not contains_sid(detail["description"], sid):
+            if not has_datin_identity(detail["description"], sid):
                 status = "READ_ERROR"
                 issues.append("Identitas device berubah selama pembacaan")
         results.append({
             "sid": sid, "source_row": customer.get("source_row"), "institution": customer.get("customer_name", ""),
             "customer_detail": customer.get("customer_detail", ""),
             "expected_server": server, "status": status, "reasons": issues, "differences": differences,
+            "planned_description": planned_description(customer),
             "spreadsheet": {key: customer.get(key, "") for key in FIELDS},
-            "candidates": [{"server": d["server"], "host_id": d["host_id"], "description": d["description"], "memberships": d["memberships"], "detail": d.get("detail"), "detail_error": d.get("detail_error")} for d in matches],
+            "candidates": [{"server": d["server"], "host_id": d["host_id"], "description": d["description"], "memberships": d["memberships"], "detail": d.get("detail"), "detail_error": d.get("detail_error"), "candidate_role": "PREFIX_CANDIDATE" if has_datin_identity(d["description"], sid) else "EXTERNAL", "protected": is_protected(d, protected)} for d in sid_matches],
             "ownership": "UNREVIEWED",
         })
     for conflict in source_conflicts:
@@ -212,7 +246,12 @@ def fetch_inventory(client):
     filter_input = soup.select_one('input[name="filter"]')
     if filter_input and filter_input.get("value", "").strip():
         raise RuntimeError("Filter pencarian Devices belum kosong.")
-    devices = parse_device_list(response.text)
+    expected_total = None
+    if re.search(r"\bShowing\s+All\s+Rows\b", soup.get_text(" ", strip=True), re.IGNORECASE):
+        probe = client.session.get(client.base + "/host.php", params={"host_template_id": -1, "host_status": -1, "filter": "", "host_rows": 10, "page": 1}, timeout=60)
+        checked_html(probe)
+        expected_total = parse_device_total(probe.text)
+    devices = parse_device_list(response.text, expected_total=expected_total)
     tree = client.session.get(client.base + "/tree.php", params={"action": "edit", "id": client.tree}, timeout=30)
     checked_html(tree)
     memberships = parse_tree_memberships(tree.text, client.tree)
@@ -222,7 +261,7 @@ def fetch_inventory(client):
 
 
 def safe_csv(value):
-    text = str(value or "")
+    text = str(value if value is not None else "")
     return "'" + text if text.lstrip().startswith(("=", "+", "-", "@")) else text
 
 
@@ -230,16 +269,18 @@ def write_reports(prefix, report):
     prefix = Path(prefix)
     prefix.parent.mkdir(parents=True, exist_ok=True)
     Path(str(prefix) + ".json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-    columns = ["status", "sid", "source_row", "institution", "customer_detail", "expected_server", "cacti_server", "host_id", "cacti_description", "cacti_header", "reasons"]
+    columns = ["status", "sid", "source_row", "institution", "customer_detail", "expected_server", "planned_description", "planned_actions", "plan_reasons", "planned_header_id", "candidate_role", "cacti_server", "host_id", "cacti_description", "cacti_header", "reasons"]
     for field in FIELDS:
         columns.extend(["sheet_" + field, "cacti_" + field])
     with Path(str(prefix) + ".csv").open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns)
         writer.writeheader()
         for result in report["results"]:
+            plan = next((r for r in report.get("device_plan", {}).get("rows", []) if r["sid"] == result["sid"] and r.get("source_row") == result.get("source_row")), {})
             for candidate in result["candidates"] or [{}]:
                 row = {key: result.get(key, "") for key in columns}
-                row.update(cacti_server=candidate.get("server", ""), host_id=candidate.get("host_id", ""), cacti_description=candidate.get("description", ""), cacti_header="; ".join(item["header"] for item in candidate.get("memberships", [])), reasons="; ".join(result["reasons"]))
+                row.update(planned_actions="; ".join(plan.get("actions", [])), plan_reasons="; ".join(plan.get("reasons", [])), planned_header_id=plan.get("header_id", ""))
+                row.update(candidate_role=candidate.get("candidate_role", ""), cacti_server=candidate.get("server", ""), host_id=candidate.get("host_id", ""), cacti_description=candidate.get("description", ""), cacti_header="; ".join(item["header"] for item in candidate.get("memberships", [])), reasons="; ".join(result["reasons"]))
                 for source_field, cacti_field in FIELDS.items():
                     row["sheet_" + source_field] = result.get("spreadsheet", {}).get(source_field, "")
                     row["cacti_" + source_field] = (candidate.get("detail") or {}).get(cacti_field, "")
@@ -251,6 +292,7 @@ def main():
     parser.add_argument("--env-file", default=str(Path(__file__).with_name(".env")))
     parser.add_argument("--report-prefix", default=str(Path(__file__).with_name("comparison.report")))
     parser.add_argument("--protected-header", action="append", default=["ATCS"])
+    parser.add_argument("--plan", action="store_true", help="Pratinjau tindakan dengan mapping database dan header live; tidak menulis ke Cacti")
     args = parser.parse_args()
     load_dotenv(args.env_file)
     clients = []
@@ -258,7 +300,11 @@ def main():
     try:
         hdwork = HDWork()
         source = hdwork.request("GET", "/api/datin-cacti/device-source")
+        mapping_source = hdwork.request("GET", "/api/datin-cacti/device-mappings") if args.plan else None
+        if mapping_source and (mapping_source["spreadsheet_id"] != source["spreadsheet_id"] or mapping_source["snapshot_at"] != source["snapshot_at"]):
+            raise RuntimeError("Snapshot mapping dan sumber berbeda; ulangi pratinjau.")
         inventory = []
+        headers = {}
         for server in SERVERS:
             client = Cacti(server)
             clients.append(client)
@@ -266,10 +312,12 @@ def main():
             devices = fetch_inventory(client)
             print(f"{server}: {len(devices)} device ditemukan", flush=True)
             inventory.extend(devices)
+            if args.plan:
+                headers[server] = client.headers()
         customers = source["customers"]
         # Fetch detail only for SID candidates; avoid pinging thousands of unrelated hosts.
         for index, device in enumerate(inventory):
-            if not any(contains_sid(device["description"], customer["sid"]) for customer in customers):
+            if not any(has_datin_identity(device["description"], customer["sid"]) for customer in customers):
                 continue
             client = next(client for client in clients if client.server == device["server"])
             try:
@@ -283,12 +331,22 @@ def main():
         result = compare(customers, inventory, {item["alias"]: item["name"] for item in source.get("aliases", [])}, {normalize(name) for name in args.protected_header}, source.get("conflicts"))
         # Reject reports if the source changed during a long inventory pass.
         current = hdwork.request("GET", "/api/datin-cacti/device-source")
-        result.update(time=datetime.now(timezone.utc).isoformat(), spreadsheet_id=source["spreadsheet_id"], snapshot_at=source["snapshot_at"], source_changed_during_scan=current["snapshot_at"] != source["snapshot_at"], inventory_counts=dict(Counter(device["server"] for device in inventory)), source_invalid_rows=source.get("invalid_rows", []), detail="READ_ONLY; no ownership adoption; memberships cover DATIN trees only; SID search is description-based, no global SN fallback")
+        result.update(time=datetime.now(timezone.utc).isoformat(), spreadsheet_id=source["spreadsheet_id"], snapshot_at=source["snapshot_at"], source_changed_during_scan=current["snapshot_at"] != source["snapshot_at"], inventory_counts=dict(Counter(device["server"] for device in inventory)), source_invalid_rows=source.get("invalid_rows", []), device_prefix=DEVICE_PREFIX, detail="READ_ONLY; prefix candidates are UNREVIEWED, not ownership approval; external devices never adopted; memberships cover DATIN trees only; no global SN fallback")
+        if args.plan:
+            current_mappings = hdwork.request("GET", "/api/datin-cacti/device-mappings")
+            if (current_mappings["spreadsheet_id"] != source["spreadsheet_id"]
+                or current_mappings["snapshot_at"] != source["snapshot_at"]
+                or sorted(current_mappings["mappings"], key=lambda row: row["sid"]) != sorted(mapping_source["mappings"], key=lambda row: row["sid"])):
+                result["source_changed_during_scan"] = True
+            result["device_plan"] = build_device_plan(result, mapping_source["mappings"], headers, inventory, SERVERS,
+                {item["alias"]: item["name"] for item in source.get("aliases", [])}, {normalize(name) for name in args.protected_header})
         write_reports(args.report_prefix, result)
         print(json.dumps(result["summary"], ensure_ascii=False))
+        if args.plan:
+            print("Pratinjau (bukan eksekusi): " + json.dumps(result["device_plan"]["summary"], ensure_ascii=False))
         print(f"Laporan: {args.report_prefix}.json dan {args.report_prefix}.csv")
         if result["source_changed_during_scan"]:
-            print("Snapshot berubah saat scan: laporan untuk tinjauan saja; jalankan ulang sebelum menyetujui mapping.", file=sys.stderr)
+            print("Snapshot sumber atau mapping berubah saat scan: laporan untuk tinjauan saja; jalankan ulang sebelum menyetujui mapping.", file=sys.stderr)
             return 2
         return 1 if result["summary"].get("READ_ERROR") else 0
     except Exception as error:

@@ -259,7 +259,9 @@ def parse_down_devices(html):
 
             if name_tag:
                 data["name"] = (
-                    name_tag.get_text(strip=True)
+                    # Keep the alarm name/SID compatible with legacy devices.
+                    # The management marker belongs to Cacti, not customer text.
+                    re.sub(r"^\[HD-D\]\s+", "", name_tag.get_text(strip=True))
                 )
 
             for row in rows:

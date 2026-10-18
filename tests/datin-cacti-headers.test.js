@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const express = require("express");
-const { groupInstitutions, getHeaderPlan, getDeviceSource, saveHeaderMappings } = require("../src/services/datin-cacti-headers.service");
+const { groupInstitutions, getHeaderPlan, getDeviceSource, saveHeaderMappings, getDeviceMappings } = require("../src/services/datin-cacti-headers.service");
 
 test("header plans group institution per server and exclude invalid server/status", () => {
   const result = groupInstitutions([
@@ -94,4 +94,31 @@ test("Cacti agent endpoints reject the spreadsheet key and require their own key
   assert.equal((await fetch(url)).status, 401);
   assert.equal((await fetch(url, { headers: { "X-Sheet-Sync-Key": "sheet-key" } })).status, 401);
   assert.equal((await fetch(url, { headers: { "X-Cacti-Agent-Key": "wrong-key" } })).status, 403);
+  const mappingsUrl = url.replace("header-plan", "device-mappings");
+  assert.equal((await fetch(mappingsUrl)).status, 401);
+  assert.equal((await fetch(mappingsUrl, { headers: { "X-Cacti-Agent-Key": "wrong-key" } })).status, 403);
+  assert.equal((await fetch(mappingsUrl, { method: "POST", headers: { "X-Cacti-Agent-Key": "agent-test-key" } })).status, 404);
+});
+
+test("device mappings are scoped to the source and read only; missing migration fails closed", async () => {
+  const now = new Date();
+  let argsSeen;
+  const db = { query: async (sql, args) => {
+    if (sql.includes("FROM datin_cacti_devices")) {
+      assert.match(sql, /WHERE spreadsheet_id = \?/);
+      assert.doesNotMatch(sql, /INSERT|UPDATE|DELETE/i);
+      argsSeen = args;
+      return [[{ sid: "000123", server: "SBS", host_id: 42, ownership_status: "REVIEW_REQUIRED" }]];
+    }
+    return [[{ last_snapshot_at: now, age_seconds: 1, sid: null }]];
+  } };
+  const result = await getDeviceMappings(db);
+  assert.deepEqual(argsSeen, [result.spreadsheet_id]);
+  assert.equal(result.mappings[0].sid, "000123");
+  assert.equal(result.snapshot_at, now);
+  const missing = { query: async (sql) => {
+    if (sql.includes("FROM datin_cacti_devices")) throw Object.assign(new Error("missing"), { code: "ER_NO_SUCH_TABLE" });
+    return [[{ last_snapshot_at: now, age_seconds: 1 }]];
+  } };
+  await assert.rejects(getDeviceMappings(missing), (error) => error.statusCode === 503 && /20261019/.test(error.message));
 });
