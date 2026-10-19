@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const pool = require("../config/database");
 const { prepareInstitutionInventory, syncInstitutions } = require("./datin-institution-sync.service");
+const { prepareDeviceInventory, saveDeviceInventory } = require("./datin-device-inventory.service");
 
 const SOURCE_ID = "16tSELEZFzbH7FdI3NFqnNJx17xVf8GXgvZD5ghfxkLE";
 const FIELDS = ["sid", "service", "customer_category", "customer_name", "customer_detail", "address", "access_node", "fsp", "serial_number", "slot", "port", "onu", "olt_ip", "server", "status"];
@@ -39,8 +40,14 @@ function prepareSnapshot(payload) {
     if (!bySid.has(data.sid)) bySid.set(data.sid, []);
     bySid.get(data.sid).push({ source_row: row.source_row, data });
   }
+  const deviceInventory = prepareDeviceInventory(payload);
+  const inventoryConflicts = new Map((deviceInventory?.conflicts || []).map(r => [r.sid.toUpperCase(), r]));
   const records = [];
   for (const [sid, rows] of bySid) {
+    if (inventoryConflicts.has(sid.toUpperCase())) {
+      if (!summary.conflicts.some(r => r.sid.toUpperCase() === sid.toUpperCase())) summary.conflicts.push(inventoryConflicts.get(sid.toUpperCase()));
+      continue;
+    }
     if (rows.length > 1) { summary.conflicts.push({ sid, rows: rows.map((row) => row.source_row) }); continue; }
     const record = rows[0];
     if (!record.data.customer_name || record.data.customer_name.length > 255) {
@@ -53,11 +60,11 @@ function prepareSnapshot(payload) {
     records.push(record);
   }
   const institutions = prepareInstitutionInventory(payload);
-  return { records, summary, snapshotAt, institutions };
+  return { records, summary, snapshotAt, institutions, deviceInventory };
 }
 
 async function syncSnapshot(payload, database = pool) {
-  const { records, summary, snapshotAt, institutions } = prepareSnapshot(payload);
+  const { records, summary, snapshotAt, institutions, deviceInventory } = prepareSnapshot(payload);
   const connection = await database.getConnection();
   try {
     await connection.beginTransaction();
@@ -92,6 +99,7 @@ async function syncSnapshot(payload, database = pool) {
       }
     }
     summary.institutions = await syncInstitutions(connection, institutions, records, baseline);
+    summary.device_inventory = await saveDeviceInventory(connection, payload, deviceInventory, records, snapshotAt);
     const result = { success: true, run_id: payload.run_id, summary };
     await connection.query("INSERT INTO datin_sheet_sync_runs (run_id, spreadsheet_id, snapshot_at, result_json) VALUES (?, ?, ?, ?)", [payload.run_id, payload.spreadsheet_id, snapshotAt, JSON.stringify(result)]);
     await connection.query("UPDATE datin_sheet_sources SET last_snapshot_at = ? WHERE spreadsheet_id = ?", [snapshotAt, payload.spreadsheet_id]);

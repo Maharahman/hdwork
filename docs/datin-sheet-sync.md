@@ -7,6 +7,10 @@ memperbarui pilihan `/alarmdatin` dan membersihkan master yang benar-benar hilan
 Jadwal Google bersifat berkala, tidak harus tepat pada menit 00/10/20.
 Menu `HD Work → Sinkronkan sekarang` tersedia saat spreadsheet dibuka ulang.
 
+Untuk rekonsiliasi device Cacti berkala, versi terbaru juga mengirim inventaris
+SID/status lengkap (termasuk NOT) secara terpisah dari data pelanggan OK.
+Panduan aktivasi, migrasi dan pengamannya: [datin-cacti-automation.md](datin-cacti-automation.md).
+
 ## 1. Backend
 
 - Jalankan `database/migrations/20261018_add_datin_sheet_sync.sql` sekali pada database yang dipakai backend.

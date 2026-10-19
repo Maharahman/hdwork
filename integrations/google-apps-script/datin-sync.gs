@@ -28,6 +28,7 @@ function readDatinSnapshot_(grid) {
   });
   const rows = [];
   const institutionRows = [];
+  const deviceRows = [];
   let blankRows = 0;
   grid.slice(1).forEach(function (values, index) {
     const row = { source_row: index + 2 };
@@ -36,12 +37,14 @@ function readDatinSnapshot_(grid) {
     });
     if (Object.keys(columns).every(function (key) { return row[key] === ''; })) { blankRows += 1; return; }
     institutionRows.push({ source_row: row.source_row, customer_name: row.customer_name, status: row.status });
+    deviceRows.push({ source_row: row.source_row, sid: row.sid, customer_name: row.customer_name, status: row.status, server: row.server });
     if (row.status.toUpperCase() !== 'OK') return;
     rows.push(row);
   });
   return {
     rows: rows,
-    institution_inventory: { version: 1, complete: true, total_rows: grid.length - 1, blank_rows: blankRows, rows: institutionRows }
+    institution_inventory: { version: 1, complete: true, total_rows: grid.length - 1, blank_rows: blankRows, rows: institutionRows },
+    device_inventory: { version: 1, complete: true, total_rows: grid.length - 1, blank_rows: blankRows, rows: deviceRows }
   };
 }
 
@@ -65,7 +68,7 @@ function runDatinSync_() {
     const payload = JSON.stringify({
       spreadsheet_id: spreadsheet.getId(), sheet_name: sheet.getName(),
       run_id: Utilities.getUuid(), snapshot_at: snapshotAt, rows: contents.rows,
-      institution_inventory: contents.institution_inventory
+      institution_inventory: contents.institution_inventory, device_inventory: contents.device_inventory
     });
     let result;
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -98,6 +101,7 @@ function runDatinSync_() {
       'Baru: ' + summary.created + ' · Diperbarui: ' + summary.updated + ' · Tetap: ' + summary.unchanged,
       'SID konflik: ' + summary.conflicts.length + ' · Baris tidak valid: ' + summary.invalid_rows.length
     ];
+    if (summary.device_inventory) lines.push('Inventaris SID: ' + summary.device_inventory.status + ' · NOT: ' + (summary.device_inventory.not || 0) + ' · Konflik: ' + (summary.device_inventory.conflicts || 0));
     if (summary.institutions) {
       const institutions = summary.institutions;
       lines.push('Instansi: ' + institutions.status + ' · Baru: ' + (institutions.created || 0) + ' · Dihapus: ' + (institutions.deleted || 0));
